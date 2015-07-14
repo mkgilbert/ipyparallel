@@ -8,3 +8,4 @@ To install the `Clusters` tab in Jupyter Notebook, add this to your `jupyter_not
 c.NotebookApp.server_extensions.append('ipyparallel.nbextension')
 ```
 
+Current development is adding support for SLURM launchers when starting clusters.
