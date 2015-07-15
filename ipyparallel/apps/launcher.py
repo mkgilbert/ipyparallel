@@ -1078,6 +1078,7 @@ class BatchSystemLauncher(BaseLauncher):
             work_dir=work_dir, config=config, **kwargs
         )
         self.batch_file = os.path.join(self.work_dir, self.batch_file_name)
+        self.submit_args = {} # added for SLURM
 
     def parse_job_id(self, output):
         """Take the output of the submit command and return the job id."""
@@ -1127,13 +1128,18 @@ class BatchSystemLauncher(BaseLauncher):
             firstline, rest = self.batch_template.split('\n',1)
             self.batch_template = u'\n'.join([firstline, self.job_array_template, rest])
 
+    def get_submit_args(self):
+	# Override this in subclasses
+	# converts submit_args dict into a list in the format that the submit cmd expects
+        return []
+
     def start(self, n):
         """Start n copies of the process using a batch system."""
         self.log.debug("Starting %s: %r", self.__class__.__name__, self.args)
         # Here we save profile_dir in the context so they
         # can be used in the batch script template as {profile_dir}
         self.write_batch_script(n)
-        output = check_output(self.args, env=os.environ)
+        output = check_output(self.args + self.get_submit_args(), env=os.environ)
         output = output.decode(DEFAULT_ENCODING, 'replace')
 
         job_id = self.parse_job_id(output)
@@ -1153,6 +1159,26 @@ class BatchSystemLauncher(BaseLauncher):
         output = output.decode(DEFAULT_ENCODING, 'replace')
         self.notify_stop(dict(job_id=self.job_id, output=output)) # Pass the output of the kill cmd
         return output
+
+    # Remainder of methods are specifically for SLURM
+    def set_options(self, opts):
+        """for SLURM specifically"""
+        if opts['time'] is not None:
+            self.set_walltime(opts['time'])
+        if opts['mem'] is not None:
+            self.set_mem(opts['mem'])
+
+    def set_walltime(self, time):
+        # override in subclass
+        pass
+
+    def set_mem(self, mem):
+        # override in subclass
+        pass
+
+    def set_nodes(self, nodes):
+        # override in subclass
+        pass
 
 
 class PBSLauncher(BatchSystemLauncher):
@@ -1234,6 +1260,94 @@ class SGEEngineSetLauncher(SGELauncher, BatchClusterAppMixin):
 #$ -N ipengine
 %s --profile-dir="{profile_dir}" --cluster-id="{cluster_id}"
 """%(' '.join(map(pipes.quote, ipengine_cmd_argv))))
+
+
+class SLURMLauncher(BatchSystemLauncher):
+    """A BatchSystemLauncher subclass for SLURM"""
+    submit_command = List(['sbatch'], config=True,
+        help="The SLURM submit command ['sbatch']")
+    # Send SIGKILL instead of term, otherwise the job is "CANCELLED", not
+    # "FINISHED"
+    delete_command = List(['scancel', '--signal=KILL'], config=True,
+        help="The SLURM delete command ['scancel']")
+    info_command = List(['scontrol', 'show', 'job'], config=True,
+        help="The SLURM info command ['scontrol']")
+    job_id_regexp = CRegExp(r'\d+', config=True,
+        help="A regular expression used to get the job id from the output of 'sbatch'")
+    batch_file = Unicode(u'', config=True,
+        help="The string that is the batch script template itself.")
+    queue_regexp = CRegExp('#SBATCH\W+-p\W+\w')
+    queue_template = Unicode('#SBATCH -p {queue}')
+    
+    def get_submit_args(self):
+        argList = []
+        for arg in self.submit_args:
+            argList.append("--" + arg + "=" + self.submit_args[arg])
+        return argList
+    
+    def get_info(self, key):
+        info = self.info().splitlines()
+        for line in info:
+            for field in line.split(" "):
+                if (key == field.split("=")[0].strip()):
+                    field = field.split("=")[1].strip()
+                    return field
+                    
+    def status(self):
+        status = self.get_info("JobState")
+        if status is None:
+            return "Error"
+        if status == "PENDING":
+            return self.STATUS_QUEUED
+        if status == "RUNNING":
+            return self.STATUS_RUNNING
+        if status == "COMPLETED":
+            return self.STATUS_COMPLETED
+        return status
+        
+    def set_walltime(self, time):
+        self.submit_args['time'] = time
+        
+    def set_mem(self, mem):
+        self.submit_args['mem-per-cpu'] = mem + 'GB'
+        
+    def set_nodes(self, nodes):
+        self.submit_args['nodes'] = nodes
+    
+
+class SLURMControllerLauncher(SLURMLauncher, BatchClusterAppMixin):
+    """Launch a controller using SLURM."""
+
+    batch_file_name = Unicode(u'SLURM_controller', config=True,
+        help="batch file name for the controller job.")
+    default_template= Unicode("""#!/bin/sh
+#SBATCH --export=ALL
+#SBATCH --job-name=ipcontroller
+
+srun %s --log-to-file --profile-dir="{profile_dir}" --cluster-id="{cluster_id}"
+"""%(' '.join(map(pipes.quote, ipcontroller_cmd_argv))))
+
+    def start(self):
+        """Start the controller by profile or profile_dir."""
+        return super(SLURMControllerLauncher, self).start(1)
+
+        
+class SLURMEngineSetLauncher(SLURMLauncher, BatchClusterAppMixin):
+    """Custom launcher handling heterogeneous clusters on SLURM"""
+    batch_file_name = Unicode(u'SLURM_engines', config=True,
+        help="batch file name for the engine(s) job.")
+    default_template = Unicode("""#!/bin/sh
+#SBATCH --job-name=ipengine
+#SBATCH --export=ALL
+
+srun %s --profile-dir={profile_dir}
+"""%(' '.join(map(pipes.quote,ipengine_cmd_argv))))
+
+    def status(self, profile=None, n=1):
+        status = super(SLURMEngineSetLauncher, self).status()
+        if status == self.STATUS_RUNNING and profile is not None:
+            status = ClusterAppMixin.status(self, profile, n)
+        return status
 
 
 # LSF launchers
@@ -1440,6 +1554,11 @@ pbs_launchers = [
     PBSControllerLauncher,
     PBSEngineSetLauncher,
 ]
+slurm_launchers = [
+    SLURMLauncher,
+    SLURMControllerLauncher,
+    SLURMEngineSetLauncher,
+]
 sge_launchers = [
     SGELauncher,
     SGEControllerLauncher,
@@ -1456,4 +1575,4 @@ htcondor_launchers = [
     HTCondorEngineSetLauncher,
 ]
 all_launchers = local_launchers + mpi_launchers + ssh_launchers + winhpc_launchers\
-                + pbs_launchers + sge_launchers + lsf_launchers + htcondor_launchers
+                + pbs_launchers + slurm_launchers + sge_launchers + lsf_launchers + htcondor_launchers

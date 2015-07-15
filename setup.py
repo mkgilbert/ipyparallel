@@ -79,9 +79,9 @@ install_requires = setuptools_args['install_requires'] = [
     'ipython_genutils',
     'decorator',
     'pyzmq>=13',
-    'ipython',
+    #'ipython',
     'jupyter_client',
-    'ipykernel',
+    #'ipykernel',
 ]
 
 extras_require = setuptools_args['extras_require'] = {
