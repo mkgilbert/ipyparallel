@@ -1324,7 +1324,7 @@ class SLURMControllerLauncher(SLURMLauncher, BatchClusterAppMixin):
 #SBATCH --export=ALL
 #SBATCH --job-name=ipcontroller
 
-srun %s --log-to-file --profile-dir="{profile_dir}" --cluster-id="{cluster_id}"
+srun --mpi=pmi2 %s --log-to-file --profile-dir="{profile_dir}" --cluster-id="{cluster_id}"
 """%(' '.join(map(pipes.quote, ipcontroller_cmd_argv))))
 
     def start(self):

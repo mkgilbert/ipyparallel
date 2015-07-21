@@ -258,7 +258,8 @@ class HubFactory(RegistrationFactory):
             scheme = self.config.TaskScheduler.scheme_name
         else:
             from .scheduler import TaskScheduler
-            scheme = TaskScheduler.scheme_name.get_default_value()
+            #scheme = TaskScheduler.scheme_name.get_default_value() # deprecated...gave errors
+            scheme = TaskScheduler.scheme_name.default_value
         
         # build connection dicts
         engine = self.engine_info = {
